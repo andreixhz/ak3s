@@ -66,9 +66,28 @@ var deleteClusterCmd = &cobra.Command{
 	},
 }
 
+var accessClusterCmd = &cobra.Command{
+	Use:   "access [name]",
+	Short: "Access a cluster",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		manager := core.NewClusterManager()
+		kubeconfigPath, err := manager.GetKubeconfig(args[0])
+		if err != nil {
+			fmt.Printf("Error accessing cluster: %v\n", err)
+			return
+		}
+		fmt.Printf("Cluster accessed successfully. Kubeconfig saved to: %s\n", kubeconfigPath)
+		fmt.Println("\nYou can now use kubectl to interact with the cluster. For example:")
+		fmt.Println("kubectl get nodes")
+		fmt.Println("kubectl get pods -A")
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(clusterCmd)
 	clusterCmd.AddCommand(createClusterCmd)
 	clusterCmd.AddCommand(listClustersCmd)
 	clusterCmd.AddCommand(deleteClusterCmd)
+	clusterCmd.AddCommand(accessClusterCmd)
 } 

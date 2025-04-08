@@ -38,3 +38,7 @@ func (m *ClusterManager) DeleteCluster(name string) error {
 func (m *ClusterManager) GetClusterStatus(name string) (string, error) {
 	return m.provider.GetClusterStatus(name)
 }
+
+func (m *ClusterManager) GetKubeconfig(name string) (string, error) {
+	return m.provider.GetKubeconfig(name)
+}

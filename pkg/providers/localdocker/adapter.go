@@ -3,7 +3,9 @@ package localdocker
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -108,4 +110,47 @@ func (a *LocalDockerAdapter) GetClusterStatus(name string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+func (a *LocalDockerAdapter) GetKubeconfig(clusterName string) (string, error) {
+	// Get the kubeconfig from the master node
+	cmd := exec.Command("docker", "exec", clusterName, "cat", "/etc/rancher/k3s/k3s.yaml")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("failed to get kubeconfig: %v", err)
+	}
+
+	// Get the master node IP
+	ipCmd := exec.Command("docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", clusterName)
+	var ipOut bytes.Buffer
+	ipCmd.Stdout = &ipOut
+	err = ipCmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("failed to get master IP: %v", err)
+	}
+	masterIP := strings.TrimSpace(ipOut.String())
+
+	// Replace localhost with the master IP
+	kubeconfig := strings.Replace(out.String(), "127.0.0.1", masterIP, -1)
+
+	// Save the kubeconfig to a file
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %v", err)
+	}
+
+	kubeconfigPath := filepath.Join(homeDir, ".kube", "config")
+	err = os.MkdirAll(filepath.Dir(kubeconfigPath), 0755)
+	if err != nil {
+		return "", fmt.Errorf("failed to create .kube directory: %v", err)
+	}
+
+	err = os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0600)
+	if err != nil {
+		return "", fmt.Errorf("failed to write kubeconfig: %v", err)
+	}
+
+	return kubeconfigPath, nil
 }
