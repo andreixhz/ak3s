@@ -222,8 +222,62 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 }
 
 func (a *LocalDockerAdapter) DeleteCluster(name string) error {
+	// Get kubeconfig first
+	kubeconfigPath, err := a.GetKubeconfig(name)
+	if err != nil {
+		return fmt.Errorf("failed to get kubeconfig: %v", err)
+	}
+
+	// Get all nodes in the cluster
+	getNodesCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
+	var nodesOut bytes.Buffer
+	getNodesCmd.Stdout = &nodesOut
+	err = getNodesCmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to get nodes: %v", err)
+	}
+
+	// Remove each node from Kubernetes
+	nodes := strings.Split(strings.TrimSpace(nodesOut.String()), "\n")
+	for _, node := range nodes {
+		if node == "" {
+			continue
+		}
+		nodeName := strings.TrimPrefix(node, "node/")
+		
+		// Drain the node first
+		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", nodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
+		drainCmd.Run() // Ignore errors as the node might already be gone
+
+		// Delete the node from Kubernetes
+		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", nodeName)
+		deleteCmd.Run() // Ignore errors as the node might already be gone
+
+		// Remove the Docker container
+		rmCmd := exec.Command("docker", "rm", "-f", nodeName)
+		rmCmd.Run() // Ignore errors as the container might already be gone
+	}
+
+	// Remove the master node container
 	cmd := exec.Command("docker", "rm", "-f", name)
-	return cmd.Run()
+	err = cmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to remove master node: %v", err)
+	}
+
+	// Remove kubeconfig
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %v", err)
+	}
+	kubeconfigPath = filepath.Join(homeDir, ".kube", "config")
+	os.Remove(kubeconfigPath)
+
+	// Remove k3s data
+	os.RemoveAll("/var/lib/rancher/k3s")
+	os.RemoveAll("/etc/rancher/k3s")
+
+	return nil
 }
 
 func (a *LocalDockerAdapter) GetClusterStatus(name string) (string, error) {
