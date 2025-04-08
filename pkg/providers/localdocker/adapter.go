@@ -122,7 +122,7 @@ func (a *LocalDockerAdapter) GetKubeconfig(clusterName string) (string, error) {
 		return "", fmt.Errorf("failed to get kubeconfig: %v", err)
 	}
 
-	// Replace 127.0.0.1 with localhost since we're using port forwarding
+	// Replace the server address with localhost:6443
 	kubeconfig := strings.Replace(out.String(), "127.0.0.1", "localhost", -1)
 
 	// Save the kubeconfig to a file
