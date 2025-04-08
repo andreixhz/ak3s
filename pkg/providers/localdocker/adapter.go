@@ -23,10 +23,19 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 	cmd := exec.Command("docker", "run", "-d",
 		"--name", name,
 		"--privileged",
+		"--tmpfs", "/run",
+		"--tmpfs", "/var/run",
+		"-e", "K3S_KUBECONFIG_MODE=644",
+		"-e", "K3S_CLUSTER_INIT=true",
 		"-p", "6443:6443",
+		"-p", "80:80",
+		"-p", "443:443",
 		"-v", "/var/lib/rancher/k3s:/var/lib/rancher/k3s",
 		"-v", "/etc/rancher/k3s:/etc/rancher/k3s",
-		"ak3s-master")
+		"rancher/k3s:v1.32.3-k3s1",
+		"server",
+		"--disable=traefik",
+		"--disable=servicelb")
 	return cmd.Run()
 }
 
