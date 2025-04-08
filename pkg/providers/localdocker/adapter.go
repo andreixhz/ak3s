@@ -122,18 +122,8 @@ func (a *LocalDockerAdapter) GetKubeconfig(clusterName string) (string, error) {
 		return "", fmt.Errorf("failed to get kubeconfig: %v", err)
 	}
 
-	// Get the master node IP
-	ipCmd := exec.Command("docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", clusterName)
-	var ipOut bytes.Buffer
-	ipCmd.Stdout = &ipOut
-	err = ipCmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("failed to get master IP: %v", err)
-	}
-	masterIP := strings.TrimSpace(ipOut.String())
-
-	// Replace localhost with the master IP
-	kubeconfig := strings.Replace(out.String(), "127.0.0.1", masterIP, -1)
+	// Replace 127.0.0.1 with localhost since we're using port forwarding
+	kubeconfig := strings.Replace(out.String(), "127.0.0.1", "localhost", -1)
 
 	// Save the kubeconfig to a file
 	homeDir, err := os.UserHomeDir()
