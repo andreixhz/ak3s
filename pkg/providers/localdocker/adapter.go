@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/andreixhz/ak3s/pkg/progress"
 )
 
 // LocalDockerAdapter implements the providers.Provider interface
@@ -23,6 +25,9 @@ func (a *LocalDockerAdapter) CreateCluster(name string) error {
 }
 
 func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
+	p := progress.NewProgress(6)
+	p.Update("Creating master node container...")
+
 	cmd := exec.Command("docker", "run", "-d",
 		"--name", name,
 		"--privileged",
@@ -43,36 +48,36 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 	
 	err := cmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to create master node: %v", err)
+		p.Error(fmt.Errorf("failed to create master node: %v", err))
 	}
 
-	// Wait for the cluster to be ready
+	p.Update("Waiting for cluster to be ready...")
 	time.Sleep(30 * time.Second)
 
-	// Get kubeconfig
+	p.Update("Getting kubeconfig...")
 	kubeconfigPath, err := a.GetKubeconfig(name)
 	if err != nil {
-		return fmt.Errorf("failed to get kubeconfig: %v", err)
+		p.Error(fmt.Errorf("failed to get kubeconfig: %v", err))
 	}
 
-	// Install Calico CNI
+	p.Update("Installing Calico CNI...")
 	calicoCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml")
 	err = calicoCmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to install Calico CNI: %v", err)
+		p.Error(fmt.Errorf("failed to install Calico CNI: %v", err))
 	}
 
-	// Install MetalLB
+	p.Update("Installing MetalLB...")
 	metallbCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml")
 	err = metallbCmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to install MetalLB: %v", err)
+		p.Error(fmt.Errorf("failed to install MetalLB: %v", err))
 	}
 
-	// Wait for MetalLB to be ready
+	p.Update("Waiting for MetalLB to be ready...")
 	time.Sleep(30 * time.Second)
 
-	// Configure MetalLB IP pool
+	p.Update("Configuring MetalLB...")
 	metallbConfig := `apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
@@ -93,29 +98,30 @@ spec:
 
 	metallbConfigFile, err := os.CreateTemp("", "metallb-config-*.yaml")
 	if err != nil {
-		return fmt.Errorf("failed to create MetalLB config file: %v", err)
+		p.Error(fmt.Errorf("failed to create MetalLB config file: %v", err))
 	}
 	defer os.Remove(metallbConfigFile.Name())
 
 	_, err = metallbConfigFile.WriteString(metallbConfig)
 	if err != nil {
-		return fmt.Errorf("failed to write MetalLB config: %v", err)
+		p.Error(fmt.Errorf("failed to write MetalLB config: %v", err))
 	}
 	metallbConfigFile.Close()
 
 	applyMetallbConfig := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", metallbConfigFile.Name())
 	err = applyMetallbConfig.Run()
 	if err != nil {
-		return fmt.Errorf("failed to apply MetalLB config: %v", err)
+		p.Error(fmt.Errorf("failed to apply MetalLB config: %v", err))
 	}
 
-	// Install NGINX Ingress Controller
+	p.Update("Installing NGINX Ingress Controller...")
 	nginxCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml")
 	err = nginxCmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to install NGINX Ingress Controller: %v", err)
+		p.Error(fmt.Errorf("failed to install NGINX Ingress Controller: %v", err))
 	}
 
+	p.Success()
 	return nil
 }
 
@@ -136,27 +142,29 @@ func (a *LocalDockerAdapter) ListClusters() ([]string, error) {
 }
 
 func (a *LocalDockerAdapter) AddNode(clusterName, nodeName string) error {
-	// Get the token from the master node
+	p := progress.NewProgress(4)
+	p.Update("Getting token from master node...")
+
 	tokenCmd := exec.Command("docker", "exec", clusterName, "cat", "/var/lib/rancher/k3s/server/node-token")
 	var tokenOut bytes.Buffer
 	tokenCmd.Stdout = &tokenOut
 	err := tokenCmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to get token from master: %v", err)
+		p.Error(fmt.Errorf("failed to get token from master: %v", err))
 	}
 	token := strings.TrimSpace(tokenOut.String())
 
-	// Get the master node IP
+	p.Update("Getting master node IP...")
 	ipCmd := exec.Command("docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", clusterName)
 	var ipOut bytes.Buffer
 	ipCmd.Stdout = &ipOut
 	err = ipCmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to get master IP: %v", err)
+		p.Error(fmt.Errorf("failed to get master IP: %v", err))
 	}
 	masterIP := strings.TrimSpace(ipOut.String())
 
-	// Create the worker node
+	p.Update("Creating worker node container...")
 	cmd := exec.Command("docker", "run", "-d",
 		"--name", nodeName,
 		"--privileged",
@@ -167,23 +175,34 @@ func (a *LocalDockerAdapter) AddNode(clusterName, nodeName string) error {
 		"-e", "K3S_NODE_NAME="+nodeName,
 		"rancher/k3s:v1.32.3-k3s1",
 		"agent")
-	return cmd.Run()
+	err = cmd.Run()
+	if err != nil {
+		p.Error(fmt.Errorf("failed to create worker node: %v", err))
+	}
+
+	p.Update("Waiting for node to join the cluster...")
+	time.Sleep(30 * time.Second)
+
+	p.Success()
+	return nil
 }
 
 func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
-	// Get kubeconfig first
+	p := progress.NewProgress(4)
+	p.Update("Getting kubeconfig...")
+
 	kubeconfigPath, err := a.GetKubeconfig(clusterName)
 	if err != nil {
-		return fmt.Errorf("failed to get kubeconfig: %v", err)
+		p.Error(fmt.Errorf("failed to get kubeconfig: %v", err))
 	}
 
-	// Get the actual node name from Kubernetes
+	p.Update("Checking if node exists in Kubernetes...")
 	getNodeCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
 	var nodeOut bytes.Buffer
 	getNodeCmd.Stdout = &nodeOut
 	err = getNodeCmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to get nodes: %v", err)
+		p.Error(fmt.Errorf("failed to get nodes: %v", err))
 	}
 
 	nodes := strings.Split(strings.TrimSpace(nodeOut.String()), "\n")
@@ -199,45 +218,53 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 	}
 
 	if !found {
-		fmt.Printf("Node %s not found in Kubernetes cluster\n", nodeName)
+		p.Update(fmt.Sprintf("Node %s not found in Kubernetes cluster", nodeName))
 	} else {
-		// Drain the node first
+		p.Update("Draining node from Kubernetes...")
 		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", kubernetesNodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
 		err = drainCmd.Run()
 		if err != nil {
-			return fmt.Errorf("failed to drain node: %v", err)
+			p.Error(fmt.Errorf("failed to drain node: %v", err))
 		}
 
-		// Delete the node from Kubernetes
+		p.Update("Removing node from Kubernetes...")
 		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", kubernetesNodeName)
 		err = deleteCmd.Run()
 		if err != nil {
-			return fmt.Errorf("failed to delete node from Kubernetes: %v", err)
+			p.Error(fmt.Errorf("failed to delete node from Kubernetes: %v", err))
 		}
 	}
 
-	// Finally, remove the Docker container
+	p.Update("Removing Docker container...")
 	cmd := exec.Command("docker", "rm", "-f", nodeName)
-	return cmd.Run()
+	err = cmd.Run()
+	if err != nil {
+		p.Error(fmt.Errorf("failed to remove Docker container: %v", err))
+	}
+
+	p.Success()
+	return nil
 }
 
 func (a *LocalDockerAdapter) DeleteCluster(name string) error {
-	// Get kubeconfig first
+	p := progress.NewProgress(5)
+	p.Update("Getting kubeconfig...")
+
 	kubeconfigPath, err := a.GetKubeconfig(name)
 	if err != nil {
-		return fmt.Errorf("failed to get kubeconfig: %v", err)
+		p.Error(fmt.Errorf("failed to get kubeconfig: %v", err))
 	}
 
-	// Get all nodes in the cluster
+	p.Update("Getting all nodes in the cluster...")
 	getNodesCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
 	var nodesOut bytes.Buffer
 	getNodesCmd.Stdout = &nodesOut
 	err = getNodesCmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to get nodes: %v", err)
+		p.Error(fmt.Errorf("failed to get nodes: %v", err))
 	}
 
-	// Remove each node from Kubernetes
+	p.Update("Removing nodes from Kubernetes...")
 	nodes := strings.Split(strings.TrimSpace(nodesOut.String()), "\n")
 	for _, node := range nodes {
 		if node == "" {
@@ -245,38 +272,35 @@ func (a *LocalDockerAdapter) DeleteCluster(name string) error {
 		}
 		nodeName := strings.TrimPrefix(node, "node/")
 		
-		// Drain the node first
 		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", nodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
-		drainCmd.Run() // Ignore errors as the node might already be gone
+		drainCmd.Run()
 
-		// Delete the node from Kubernetes
 		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", nodeName)
-		deleteCmd.Run() // Ignore errors as the node might already be gone
+		deleteCmd.Run()
 
-		// Remove the Docker container
 		rmCmd := exec.Command("docker", "rm", "-f", nodeName)
-		rmCmd.Run() // Ignore errors as the container might already be gone
+		rmCmd.Run()
 	}
 
-	// Remove the master node container
+	p.Update("Removing master node container...")
 	cmd := exec.Command("docker", "rm", "-f", name)
 	err = cmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to remove master node: %v", err)
+		p.Error(fmt.Errorf("failed to remove master node: %v", err))
 	}
 
-	// Remove kubeconfig
+	p.Update("Cleaning up configuration files...")
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %v", err)
+		p.Error(fmt.Errorf("failed to get home directory: %v", err))
 	}
 	kubeconfigPath = filepath.Join(homeDir, ".kube", "config")
 	os.Remove(kubeconfigPath)
 
-	// Remove k3s data
 	os.RemoveAll("/var/lib/rancher/k3s")
 	os.RemoveAll("/etc/rancher/k3s")
 
+	p.Success()
 	return nil
 }
 
