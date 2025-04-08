@@ -304,7 +304,7 @@ func (a *LocalDockerAdapter) DeleteCluster(name string) error {
 		p.Error(fmt.Errorf("failed to get nodes: %v", err))
 	}
 
-	p.Update("Removing nodes from Kubernetes...")
+	p.Update("Draining all nodes...")
 	nodes := strings.Split(strings.TrimSpace(nodesOut.String()), "\n")
 	for _, node := range nodes {
 		if node == "" {
@@ -312,17 +312,47 @@ func (a *LocalDockerAdapter) DeleteCluster(name string) error {
 		}
 		nodeName := strings.TrimPrefix(node, "node/")
 		
-		// Drain the node first
-		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", nodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
-		drainCmd.Run() // Ignore errors as the node might already be gone
+		// Drain the node with all options to ensure complete cleanup
+		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", nodeName,
+			"--ignore-daemonsets",
+			"--delete-emptydir-data",
+			"--force",
+			"--grace-period=0",
+			"--timeout=5m",
+			"--disable-eviction=true")
+		var drainOut bytes.Buffer
+		drainCmd.Stdout = &drainOut
+		drainCmd.Stderr = &drainOut
+		err = drainCmd.Run()
+		if err != nil {
+			fmt.Printf("Warning: Drain of node %s had issues: %v\nOutput: %s\n", nodeName, err, drainOut.String())
+		}
+
+		// Wait for all pods to be evicted
+		for i := 0; i < 30; i++ {
+			podsCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "pods", "--all-namespaces", "-o", "wide", "--field-selector", "spec.nodeName="+nodeName)
+			var podsOut bytes.Buffer
+			podsCmd.Stdout = &podsOut
+			podsCmd.Run()
+			if strings.TrimSpace(podsOut.String()) == "" {
+				break
+			}
+			time.Sleep(10 * time.Second)
+		}
 
 		// Delete the node from Kubernetes
 		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", nodeName)
-		deleteCmd.Run() // Ignore errors as the node might already be gone
+		err = deleteCmd.Run()
+		if err != nil {
+			fmt.Printf("Warning: Failed to delete node %s from Kubernetes: %v\n", nodeName, err)
+		}
 
 		// Remove the Docker container
 		rmCmd := exec.Command("docker", "rm", "-f", nodeName)
-		rmCmd.Run() // Ignore errors as the container might already be gone
+		err = rmCmd.Run()
+		if err != nil {
+			fmt.Printf("Warning: Failed to remove Docker container %s: %v\n", nodeName, err)
+		}
 	}
 
 	p.Update("Removing master node container...")
