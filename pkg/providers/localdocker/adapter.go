@@ -104,6 +104,16 @@ rules:
       - pods
       - services
       - endpoints
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: [""]
+    resources:
+      - configmaps
+    resourceNames:
+      - kubeadm-config
     verbs:
       - get
       - list
