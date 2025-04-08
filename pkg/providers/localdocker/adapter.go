@@ -101,6 +101,7 @@ rules:
       - namespaces
       - serviceaccounts
       - nodes
+      - nodes/status
       - pods
       - services
       - endpoints
@@ -109,6 +110,8 @@ rules:
       - get
       - list
       - watch
+      - update
+      - patch
   - apiGroups: [""]
     resources:
       - configmaps
