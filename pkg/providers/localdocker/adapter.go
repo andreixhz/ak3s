@@ -287,7 +287,7 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 }
 
 func (a *LocalDockerAdapter) DeleteCluster(name string) error {
-	p := progress.NewProgress(7)
+	p := progress.NewProgress(5)
 	p.Update("Getting kubeconfig...")
 
 	kubeconfigPath, err := a.GetKubeconfig(name)
@@ -296,115 +296,58 @@ func (a *LocalDockerAdapter) DeleteCluster(name string) error {
 	}
 
 	p.Update("Removing all resources from the cluster...")
-	// Get all namespaces except system ones
-	namespacesCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "namespaces", "-o", "name")
-	var namespacesOut bytes.Buffer
-	namespacesCmd.Stdout = &namespacesOut
-	err = namespacesCmd.Run()
-	if err != nil {
-		p.Error(fmt.Errorf("failed to get namespaces: %v", err))
-	}
-
-	namespaces := strings.Split(strings.TrimSpace(namespacesOut.String()), "\n")
-	for _, ns := range namespaces {
-		if ns == "" || strings.Contains(ns, "kube-system") || strings.Contains(ns, "kube-public") || strings.Contains(ns, "kube-node-lease") {
-			continue
-		}
-		namespace := strings.TrimPrefix(ns, "namespace/")
-		
-		// Delete all resources in the namespace
-		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "all", "--all", "-n", namespace, "--force", "--grace-period=0")
-		var deleteOut bytes.Buffer
-		deleteCmd.Stdout = &deleteOut
-		deleteCmd.Stderr = &deleteOut
-		deleteCmd.Run()
-	}
+	// Delete all resources in all namespaces
+	deleteAllCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "all", "--all", "--all-namespaces", "--force", "--grace-period=0")
+	deleteAllCmd.Run()
 
 	// Delete all CRDs
-	p.Update("Removing all CRDs...")
-	crdsCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "crds", "-o", "name")
-	var crdsOut bytes.Buffer
-	crdsCmd.Stdout = &crdsOut
-	err = crdsCmd.Run()
-	if err == nil {
-		crds := strings.Split(strings.TrimSpace(crdsOut.String()), "\n")
-		for _, crd := range crds {
-			if crd == "" {
-				continue
-			}
-			deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", crd, "--all", "--force", "--grace-period=0")
-			deleteCmd.Run()
+	deleteCRDsCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "crds", "--all", "--force", "--grace-period=0")
+	deleteCRDsCmd.Run()
+
+	p.Update("Stopping and removing all containers...")
+	// Stop all containers first
+	stopCmd := exec.Command("docker", "stop", "$(docker ps -a -q)")
+	stopCmd.Run()
+
+	// Remove all containers
+	rmCmd := exec.Command("docker", "rm", "-f", "$(docker ps -a -q)")
+	rmCmd.Run()
+
+	// Remove all containers related to this cluster
+	clusterContainersCmd := exec.Command("docker", "ps", "-a", "--filter", "name="+name, "-q")
+	var clusterContainersOut bytes.Buffer
+	clusterContainersCmd.Stdout = &clusterContainersOut
+	clusterContainersCmd.Run()
+	containerIDs := strings.Split(strings.TrimSpace(clusterContainersOut.String()), "\n")
+	for _, id := range containerIDs {
+		if id != "" {
+			exec.Command("docker", "rm", "-f", id).Run()
 		}
 	}
 
-	p.Update("Getting all nodes in the cluster...")
-	getNodesCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
-	var nodesOut bytes.Buffer
-	getNodesCmd.Stdout = &nodesOut
-	err = getNodesCmd.Run()
-	if err != nil {
-		p.Error(fmt.Errorf("failed to get nodes: %v", err))
-	}
+	p.Update("Removing all Docker volumes and networks...")
+	// Remove all volumes
+	volumeCmd := exec.Command("docker", "volume", "prune", "-f")
+	volumeCmd.Run()
 
-	p.Update("Draining all nodes...")
-	nodes := strings.Split(strings.TrimSpace(nodesOut.String()), "\n")
-	for _, node := range nodes {
-		if node == "" {
-			continue
-		}
-		nodeName := strings.TrimPrefix(node, "node/")
-		
-		// Drain the node with all options to ensure complete cleanup
-		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", nodeName,
-			"--ignore-daemonsets",
-			"--delete-emptydir-data",
-			"--force",
-			"--grace-period=0",
-			"--timeout=5m",
-			"--disable-eviction=true")
-		var drainOut bytes.Buffer
-		drainCmd.Stdout = &drainOut
-		drainCmd.Stderr = &drainOut
-		err = drainCmd.Run()
-		if err != nil {
-			fmt.Printf("Warning: Drain of node %s had issues: %v\nOutput: %s\n", nodeName, err, drainOut.String())
-		}
+	// Remove all networks
+	networkCmd := exec.Command("docker", "network", "prune", "-f")
+	networkCmd.Run()
 
-		// Wait for all pods to be evicted
-		for i := 0; i < 30; i++ {
-			podsCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "pods", "--all-namespaces", "-o", "wide", "--field-selector", "spec.nodeName="+nodeName)
-			var podsOut bytes.Buffer
-			podsCmd.Stdout = &podsOut
-			podsCmd.Run()
-			if strings.TrimSpace(podsOut.String()) == "" {
-				break
-			}
-			time.Sleep(10 * time.Second)
+	// Remove specific volumes associated with the cluster
+	clusterVolumeCmd := exec.Command("docker", "volume", "ls", "-q", "--filter", "name="+name)
+	var clusterVolumeOut bytes.Buffer
+	clusterVolumeCmd.Stdout = &clusterVolumeOut
+	clusterVolumeCmd.Run()
+	volumeIDs := strings.Split(strings.TrimSpace(clusterVolumeOut.String()), "\n")
+	for _, id := range volumeIDs {
+		if id != "" {
+			exec.Command("docker", "volume", "rm", "-f", id).Run()
 		}
-
-		// Delete the node from Kubernetes
-		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", nodeName)
-		err = deleteCmd.Run()
-		if err != nil {
-			fmt.Printf("Warning: Failed to delete node %s from Kubernetes: %v\n", nodeName, err)
-		}
-
-		// Remove the Docker container
-		rmCmd := exec.Command("docker", "rm", "-f", nodeName)
-		err = rmCmd.Run()
-		if err != nil {
-			fmt.Printf("Warning: Failed to remove Docker container %s: %v\n", nodeName, err)
-		}
-	}
-
-	p.Update("Removing master node container...")
-	cmd := exec.Command("docker", "rm", "-f", name)
-	err = cmd.Run()
-	if err != nil {
-		p.Error(fmt.Errorf("failed to remove master node: %v", err))
 	}
 
 	p.Update("Cleaning up configuration files...")
+	// Remove kubeconfig
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		p.Error(fmt.Errorf("failed to get home directory: %v", err))
@@ -412,51 +355,19 @@ func (a *LocalDockerAdapter) DeleteCluster(name string) error {
 	kubeconfigPath = filepath.Join(homeDir, ".kube", "config")
 	os.Remove(kubeconfigPath)
 
-	// Remove k3s data
+	// Remove all k3s data
 	os.RemoveAll("/var/lib/rancher/k3s")
 	os.RemoveAll("/etc/rancher/k3s")
+	os.RemoveAll("/var/lib/kubelet")
+	os.RemoveAll("/var/lib/cni")
+	os.RemoveAll("/var/log/containers")
+	os.RemoveAll("/var/log/pods")
+	os.RemoveAll("/var/log/k3s")
 
-	// Force remove all containers that might be related to this cluster
-	forceRemoveCmd := exec.Command("docker", "ps", "-a", "--filter", "name="+name, "-q")
-	var forceRemoveOut bytes.Buffer
-	forceRemoveCmd.Stdout = &forceRemoveOut
-	forceRemoveCmd.Run()
-	containerIDs := strings.Split(strings.TrimSpace(forceRemoveOut.String()), "\n")
-	for _, id := range containerIDs {
-		if id != "" {
-			exec.Command("docker", "rm", "-f", id).Run()
-		}
-	}
-
-	p.Update("Removing Docker volumes...")
-	// Get all volumes associated with the cluster
-	volumeCmd := exec.Command("docker", "volume", "ls", "-q", "--filter", "name="+name)
-	var volumeOut bytes.Buffer
-	volumeCmd.Stdout = &volumeOut
-	volumeCmd.Run()
-	volumeIDs := strings.Split(strings.TrimSpace(volumeOut.String()), "\n")
-	for _, id := range volumeIDs {
-		if id != "" {
-			exec.Command("docker", "volume", "rm", "-f", id).Run()
-		}
-	}
-
-	// Also remove any volumes that might be mounted in the containers
-	containerVolumeCmd := exec.Command("docker", "ps", "-a", "--filter", "name="+name, "--format", "{{.Mounts}}")
-	var containerVolumeOut bytes.Buffer
-	containerVolumeCmd.Stdout = &containerVolumeOut
-	containerVolumeCmd.Run()
-	containerVolumes := strings.Split(strings.TrimSpace(containerVolumeOut.String()), "\n")
-	for _, volume := range containerVolumes {
-		if volume != "" {
-			// Extract volume name from mount string
-			parts := strings.Split(volume, " ")
-			if len(parts) > 0 {
-				volumeName := parts[0]
-				exec.Command("docker", "volume", "rm", "-f", volumeName).Run()
-			}
-		}
-	}
+	// Remove Docker data
+	os.RemoveAll("/var/lib/docker/containers")
+	os.RemoveAll("/var/lib/docker/volumes")
+	os.RemoveAll("/var/lib/docker/network")
 
 	p.Success()
 	return nil
