@@ -92,6 +92,27 @@ func (a *LocalDockerAdapter) AddNode(clusterName, nodeName string) error {
 }
 
 func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
+	// Get kubeconfig first
+	kubeconfigPath, err := a.GetKubeconfig(clusterName)
+	if err != nil {
+		return fmt.Errorf("failed to get kubeconfig: %v", err)
+	}
+
+	// Drain the node first
+	drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", nodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
+	err = drainCmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to drain node: %v", err)
+	}
+
+	// Delete the node from Kubernetes
+	deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", nodeName)
+	err = deleteCmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to delete node from Kubernetes: %v", err)
+	}
+
+	// Finally, remove the Docker container
 	cmd := exec.Command("docker", "rm", "-f", nodeName)
 	return cmd.Run()
 }
