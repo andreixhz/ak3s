@@ -272,14 +272,17 @@ func (a *LocalDockerAdapter) DeleteCluster(name string) error {
 		}
 		nodeName := strings.TrimPrefix(node, "node/")
 		
+		// Drain the node first
 		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", nodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
-		drainCmd.Run()
+		drainCmd.Run() // Ignore errors as the node might already be gone
 
+		// Delete the node from Kubernetes
 		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", nodeName)
-		deleteCmd.Run()
+		deleteCmd.Run() // Ignore errors as the node might already be gone
 
+		// Remove the Docker container
 		rmCmd := exec.Command("docker", "rm", "-f", nodeName)
-		rmCmd.Run()
+		rmCmd.Run() // Ignore errors as the container might already be gone
 	}
 
 	p.Update("Removing master node container...")
@@ -297,8 +300,21 @@ func (a *LocalDockerAdapter) DeleteCluster(name string) error {
 	kubeconfigPath = filepath.Join(homeDir, ".kube", "config")
 	os.Remove(kubeconfigPath)
 
+	// Remove k3s data
 	os.RemoveAll("/var/lib/rancher/k3s")
 	os.RemoveAll("/etc/rancher/k3s")
+
+	// Force remove all containers that might be related to this cluster
+	forceRemoveCmd := exec.Command("docker", "ps", "-a", "--filter", "name="+name, "-q")
+	var forceRemoveOut bytes.Buffer
+	forceRemoveCmd.Stdout = &forceRemoveOut
+	forceRemoveCmd.Run()
+	containerIDs := strings.Split(strings.TrimSpace(forceRemoveOut.String()), "\n")
+	for _, id := range containerIDs {
+		if id != "" {
+			exec.Command("docker", "rm", "-f", id).Run()
+		}
+	}
 
 	p.Success()
 	return nil
