@@ -1,0 +1,76 @@
+plugins:
+  - name: "metallb"
+    description: "MetalLB é um balanceador de carga para clusters Kubernetes bare-metal"
+    type: "cluster"
+    allowed_adapters:
+      - "localdocker"
+      - "aws"
+      - "ibm"
+    manifest_url: "https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml"
+    commands:
+      - name: "install"
+        description: "Instala o MetalLB no cluster"
+        command: "kubectl"
+        args:
+          - "apply"
+          - "-f"
+          - "https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml"
+      - name: "configure"
+        description: "Configura o MetalLB com um pool de IPs"
+        command: "kubectl"
+        args:
+          - "apply"
+          - "-f"
+          - "-"
+        stdin: |
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: default
+            namespace: metallb-system
+          spec:
+            addresses:
+            - 172.18.255.200-172.18.255.250
+          ---
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: default
+            namespace: metallb-system
+          spec:
+            ipAddressPools:
+            - default
+
+  - name: "nginx-ingress"
+    description: "Controlador de Ingress NGINX para Kubernetes"
+    type: "cluster"
+    allowed_adapters:
+      - "localdocker"
+      - "aws"
+      - "ibm"
+    manifest_url: "https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml"
+    commands:
+      - name: "install"
+        description: "Instala o NGINX Ingress Controller no cluster"
+        command: "kubectl"
+        args:
+          - "apply"
+          - "-f"
+          - "https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml"
+
+  - name: "node-problem-detector"
+    description: "Monitora e reporta problemas nos nós do cluster"
+    type: "nodes"
+    allowed_adapters:
+      - "localdocker"
+      - "aws"
+      - "ibm"
+    manifest_url: "https://raw.githubusercontent.com/kubernetes/node-problem-detector/master/deployment/node-problem-detector.yaml"
+    commands:
+      - name: "install"
+        description: "Instala o Node Problem Detector no cluster"
+        command: "kubectl"
+        args:
+          - "apply"
+          - "-f"
+          - "https://raw.githubusercontent.com/kubernetes/node-problem-detector/master/deployment/node-problem-detector.yaml" 
