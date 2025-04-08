@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // LocalDockerAdapter implements the providers.Provider interface
@@ -36,9 +37,86 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 		"-v", "/etc/rancher/k3s:/etc/rancher/k3s",
 		"rancher/k3s:v1.32.3-k3s1",
 		"server",
+		"--flannel-backend=none",
 		"--disable=traefik",
 		"--disable=servicelb")
-	return cmd.Run()
+	
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to create master node: %v", err)
+	}
+
+	// Wait for the cluster to be ready
+	time.Sleep(30 * time.Second)
+
+	// Get kubeconfig
+	kubeconfigPath, err := a.GetKubeconfig(name)
+	if err != nil {
+		return fmt.Errorf("failed to get kubeconfig: %v", err)
+	}
+
+	// Install Calico CNI
+	calicoCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml")
+	err = calicoCmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to install Calico CNI: %v", err)
+	}
+
+	// Install MetalLB
+	metallbCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml")
+	err = metallbCmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to install MetalLB: %v", err)
+	}
+
+	// Wait for MetalLB to be ready
+	time.Sleep(30 * time.Second)
+
+	// Configure MetalLB IP pool
+	metallbConfig := `apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: default
+  namespace: metallb-system
+spec:
+  addresses:
+  - 172.18.255.200-172.18.255.250
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: default
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - default`
+
+	metallbConfigFile, err := os.CreateTemp("", "metallb-config-*.yaml")
+	if err != nil {
+		return fmt.Errorf("failed to create MetalLB config file: %v", err)
+	}
+	defer os.Remove(metallbConfigFile.Name())
+
+	_, err = metallbConfigFile.WriteString(metallbConfig)
+	if err != nil {
+		return fmt.Errorf("failed to write MetalLB config: %v", err)
+	}
+	metallbConfigFile.Close()
+
+	applyMetallbConfig := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", metallbConfigFile.Name())
+	err = applyMetallbConfig.Run()
+	if err != nil {
+		return fmt.Errorf("failed to apply MetalLB config: %v", err)
+	}
+
+	// Install NGINX Ingress Controller
+	nginxCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml")
+	err = nginxCmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to install NGINX Ingress Controller: %v", err)
+	}
+
+	return nil
 }
 
 func (a *LocalDockerAdapter) ListClusters() ([]string, error) {
