@@ -73,8 +73,295 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 	}
 
 	p.Update("Installing Calico CNI...")
-	// Install Calico using the official manifest
-	calicoCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml")
+	// Install Calico using the official manifest with custom settings
+	calicoManifest := `apiVersion: v1
+kind: Namespace
+metadata:
+  name: calico-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: calico-node
+  namespace: calico-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: calico-kube-controllers
+  namespace: calico-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: calico-node
+rules:
+  - apiGroups: [""]
+    resources:
+      - namespaces
+      - serviceaccounts
+      - nodes
+      - pods
+      - services
+      - endpoints
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: ["crd.projectcalico.org"]
+    resources:
+      - globalfelixconfigs
+      - felixconfigurations
+      - bgppeers
+      - globalbgpconfigs
+      - bgpconfigurations
+      - ippools
+      - ipamblocks
+      - globalnetworkpolicies
+      - globalnetworksets
+      - networkpolicies
+      - networksets
+      - clusterinformations
+      - hostendpoints
+      - blockaffinities
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: calico-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: calico-node
+subjects:
+- kind: ServiceAccount
+  name: calico-node
+  namespace: calico-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: calico-config
+  namespace: calico-system
+data:
+  typha_service_name: "none"
+  calico_backend: "bird"
+  veth_mtu: "1440"
+  cni_network_config: |-
+    {
+      "name": "k8s-pod-network",
+      "cniVersion": "0.3.1",
+      "plugins": [
+        {
+          "type": "calico",
+          "log_level": "info",
+          "log_file_path": "/var/log/calico/cni/cni.log",
+          "datastore_type": "kubernetes",
+          "nodename": "__KUBERNETES_NODE_NAME__",
+          "mtu": __CNI_MTU__,
+          "ipam": {
+              "type": "calico-ipam"
+          },
+          "policy": {
+              "type": "k8s"
+          },
+          "kubernetes": {
+              "kubeconfig": "__KUBECONFIG_FILEPATH__"
+          }
+        },
+        {
+          "type": "portmap",
+          "snat": true,
+          "capabilities": {"portMappings": true}
+        },
+        {
+          "type": "bandwidth",
+          "capabilities": {"bandwidth": true}
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: calico-node
+  namespace: calico-system
+  labels:
+    k8s-app: calico-node
+spec:
+  selector:
+    matchLabels:
+      k8s-app: calico-node
+  template:
+    metadata:
+      labels:
+        k8s-app: calico-node
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      hostNetwork: true
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+      serviceAccountName: calico-node
+      containers:
+        - name: calico-node
+          image: docker.io/calico/node:v3.26.1
+          env:
+            - name: DATASTORE_TYPE
+              value: "kubernetes"
+            - name: WAIT_FOR_DATASTORE
+              value: "true"
+            - name: NODENAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CALICO_NETWORKING_BACKEND
+              value: "bird"
+            - name: CLUSTER_TYPE
+              value: "k8s,bgp"
+            - name: IP
+              value: "autodetect"
+            - name: IP_AUTODETECTION_METHOD
+              value: "first-found"
+            - name: CALICO_IPV4POOL_CIDR
+              value: "10.42.0.0/16"
+            - name: CALICO_IPV4POOL_IPIP
+              value: "Always"
+            - name: FELIX_IPINIPMTU
+              value: "1440"
+            - name: CALICO_DISABLE_FILE_LOGGING
+              value: "true"
+            - name: FELIX_DEFAULTENDPOINTTOHOSTACTION
+              value: "ACCEPT"
+            - name: FELIX_IPV6SUPPORT
+              value: "false"
+            - name: FELIX_LOGSEVERITYSCREEN
+              value: "info"
+            - name: FELIX_HEALTHENABLED
+              value: "true"
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: 250m
+          livenessProbe:
+            exec:
+              command:
+              - /bin/calico-node
+              - -felix-live
+              - -bird-live
+            periodSeconds: 10
+            initialDelaySeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+              - /bin/calico-node
+              - -felix-ready
+              - -bird-ready
+            periodSeconds: 10
+          volumeMounts:
+            - mountPath: /host/etc/cni/net.d
+              name: cni-net-dir
+            - mountPath: /var/lib/calico
+              name: var-lib-calico
+            - mountPath: /var/log/calico
+              name: var-log-calico
+            - mountPath: /var/run/calico
+              name: var-run-calico
+            - mountPath: /sys/fs/cgroup
+              name: cgroup
+              readOnly: true
+      volumes:
+        - name: cni-net-dir
+          hostPath:
+            path: /etc/cni/net.d
+        - name: var-lib-calico
+          hostPath:
+            path: /var/lib/calico
+        - name: var-log-calico
+          hostPath:
+            path: /var/log/calico
+        - name: var-run-calico
+          hostPath:
+            path: /var/run/calico
+        - name: policysync
+          hostPath:
+            path: /var/run/nodeagent
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calico-kube-controllers
+  namespace: calico-system
+  labels:
+    k8s-app: calico-kube-controllers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: calico-kube-controllers
+  template:
+    metadata:
+      labels:
+        k8s-app: calico-kube-controllers
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - effect: NoSchedule
+          operator: Exists
+      serviceAccountName: calico-kube-controllers
+      containers:
+        - name: calico-kube-controllers
+          image: docker.io/calico/kube-controllers:v3.26.1
+          env:
+            - name: DATASTORE_TYPE
+              value: "kubernetes"
+          readinessProbe:
+            exec:
+              command:
+              - /usr/bin/check-status
+              - -r
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi`
+
+	// Create temporary file for Calico manifest
+	calicoFile, err := os.CreateTemp("", "calico-*.yaml")
+	if err != nil {
+		p.Error(fmt.Errorf("failed to create Calico manifest file: %v", err))
+	}
+	defer os.Remove(calicoFile.Name())
+
+	_, err = calicoFile.WriteString(calicoManifest)
+	if err != nil {
+		p.Error(fmt.Errorf("failed to write Calico manifest: %v", err))
+	}
+	calicoFile.Close()
+
+	// Apply Calico manifest
+	calicoCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", calicoFile.Name())
 	err = calicoCmd.Run()
 	if err != nil {
 		p.Error(fmt.Errorf("failed to install Calico CNI: %v", err))
@@ -83,7 +370,7 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 	// Wait for Calico to be ready
 	p.Update("Waiting for Calico to be ready...")
 	for i := 0; i < 30; i++ {
-		statusCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "pods", "-n", "kube-system", "-l", "k8s-app=calico-node", "-o", "jsonpath='{.items[*].status.phase}'")
+		statusCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "pods", "-n", "calico-system", "-o", "jsonpath='{.items[*].status.phase}'")
 		var statusOut bytes.Buffer
 		statusCmd.Stdout = &statusOut
 		err = statusCmd.Run()
