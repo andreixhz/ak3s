@@ -247,7 +247,7 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 }
 
 func (a *LocalDockerAdapter) DeleteCluster(name string) error {
-	p := progress.NewProgress(5)
+	p := progress.NewProgress(6)
 	p.Update("Getting kubeconfig...")
 
 	kubeconfigPath, err := a.GetKubeconfig(name)
@@ -313,6 +313,36 @@ func (a *LocalDockerAdapter) DeleteCluster(name string) error {
 	for _, id := range containerIDs {
 		if id != "" {
 			exec.Command("docker", "rm", "-f", id).Run()
+		}
+	}
+
+	p.Update("Removing Docker volumes...")
+	// Get all volumes associated with the cluster
+	volumeCmd := exec.Command("docker", "volume", "ls", "-q", "--filter", "name="+name)
+	var volumeOut bytes.Buffer
+	volumeCmd.Stdout = &volumeOut
+	volumeCmd.Run()
+	volumeIDs := strings.Split(strings.TrimSpace(volumeOut.String()), "\n")
+	for _, id := range volumeIDs {
+		if id != "" {
+			exec.Command("docker", "volume", "rm", "-f", id).Run()
+		}
+	}
+
+	// Also remove any volumes that might be mounted in the containers
+	containerVolumeCmd := exec.Command("docker", "ps", "-a", "--filter", "name="+name, "--format", "{{.Mounts}}")
+	var containerVolumeOut bytes.Buffer
+	containerVolumeCmd.Stdout = &containerVolumeOut
+	containerVolumeCmd.Run()
+	containerVolumes := strings.Split(strings.TrimSpace(containerVolumeOut.String()), "\n")
+	for _, volume := range containerVolumes {
+		if volume != "" {
+			// Extract volume name from mount string
+			parts := strings.Split(volume, " ")
+			if len(parts) > 0 {
+				volumeName := parts[0]
+				exec.Command("docker", "volume", "rm", "-f", volumeName).Run()
+			}
 		}
 	}
 
