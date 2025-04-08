@@ -1,7 +1,6 @@
 package core
 
 import (
-	"fmt"
 	"github.com/andreixhz/ak3s/pkg/providers"
 	"github.com/andreixhz/ak3s/pkg/providers/localdocker"
 )

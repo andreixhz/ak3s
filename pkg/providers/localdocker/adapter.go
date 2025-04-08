@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-
-	"github.com/andreixhz/ak3s/pkg/providers"
 )
 
+// LocalDockerAdapter implements the providers.Provider interface
 type LocalDockerAdapter struct{}
 
 func (a *LocalDockerAdapter) CreateCluster(name string) error {
