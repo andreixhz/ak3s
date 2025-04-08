@@ -40,7 +40,7 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 }
 
 func (a *LocalDockerAdapter) ListClusters() ([]string, error) {
-	cmd := exec.Command("docker", "ps", "--filter", "name=ak3s-", "--format", "{{.Names}}")
+	cmd := exec.Command("docker", "ps", "--filter", "ancestor=rancher/k3s:v1.32.3-k3s1", "--format", "{{.Names}}")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()
