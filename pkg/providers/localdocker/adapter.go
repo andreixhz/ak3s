@@ -208,6 +208,16 @@ data:
       ]
     }
 ---
+apiVersion: crd.projectcalico.org/v1
+kind: IPPool
+metadata:
+  name: default-ipv4-ippool
+spec:
+  cidr: 10.42.0.0/16
+  ipipMode: Always
+  natOutgoing: true
+  nodeSelector: all()
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
