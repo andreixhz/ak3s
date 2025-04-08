@@ -38,6 +38,12 @@ func (p *Progress) print() {
 	// Create progress bar
 	barWidth := 50
 	completed := int(float64(barWidth) * percentage / 100)
+	if completed < 0 {
+		completed = 0
+	}
+	if completed > barWidth {
+		completed = barWidth
+	}
 	bar := strings.Repeat("=", completed) + strings.Repeat(" ", barWidth-completed)
 	
 	// Calculate elapsed time
