@@ -86,6 +86,7 @@ func (a *LocalDockerAdapter) AddNode(clusterName, nodeName string) error {
 		"--tmpfs", "/var/run",
 		"-e", "K3S_URL=https://"+masterIP+":6443",
 		"-e", "K3S_TOKEN="+token,
+		"-e", "K3S_NODE_NAME="+nodeName,
 		"rancher/k3s:v1.32.3-k3s1",
 		"agent")
 	return cmd.Run()
