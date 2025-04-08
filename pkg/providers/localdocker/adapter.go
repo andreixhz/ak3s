@@ -52,7 +52,18 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 	}
 
 	p.Update("Waiting for cluster to be ready...")
-	time.Sleep(30 * time.Second)
+	// Wait for the cluster to be ready
+	for i := 0; i < 30; i++ {
+		statusCmd := exec.Command("docker", "exec", name, "kubectl", "get", "nodes")
+		err = statusCmd.Run()
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Second)
+	}
+	if err != nil {
+		p.Error(fmt.Errorf("cluster failed to become ready: %v", err))
+	}
 
 	p.Update("Getting kubeconfig...")
 	kubeconfigPath, err := a.GetKubeconfig(name)
@@ -67,6 +78,22 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 		p.Error(fmt.Errorf("failed to install Calico CNI: %v", err))
 	}
 
+	// Wait for Calico to be ready
+	p.Update("Waiting for Calico to be ready...")
+	for i := 0; i < 30; i++ {
+		statusCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "pods", "-n", "kube-system", "-l", "k8s-app=calico-node", "-o", "jsonpath='{.items[*].status.phase}'")
+		var statusOut bytes.Buffer
+		statusCmd.Stdout = &statusOut
+		err = statusCmd.Run()
+		if err == nil && strings.Contains(statusOut.String(), "Running") {
+			break
+		}
+		time.Sleep(10 * time.Second)
+	}
+	if err != nil {
+		p.Error(fmt.Errorf("Calico failed to become ready: %v", err))
+	}
+
 	p.Update("Installing MetalLB...")
 	metallbCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml")
 	err = metallbCmd.Run()
@@ -74,8 +101,21 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 		p.Error(fmt.Errorf("failed to install MetalLB: %v", err))
 	}
 
+	// Wait for MetalLB to be ready
 	p.Update("Waiting for MetalLB to be ready...")
-	time.Sleep(30 * time.Second)
+	for i := 0; i < 30; i++ {
+		statusCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "pods", "-n", "metallb-system", "-o", "jsonpath='{.items[*].status.phase}'")
+		var statusOut bytes.Buffer
+		statusCmd.Stdout = &statusOut
+		err = statusCmd.Run()
+		if err == nil && strings.Contains(statusOut.String(), "Running") {
+			break
+		}
+		time.Sleep(10 * time.Second)
+	}
+	if err != nil {
+		p.Error(fmt.Errorf("MetalLB failed to become ready: %v", err))
+	}
 
 	p.Update("Configuring MetalLB...")
 	metallbConfig := `apiVersion: metallb.io/v1beta1
