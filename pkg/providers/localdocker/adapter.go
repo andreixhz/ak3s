@@ -99,16 +99,6 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 		return fmt.Errorf("failed to get kubeconfig: %v", err)
 	}
 
-	// Get the container ID from the node name
-	containerIDCmd := exec.Command("docker", "inspect", "-f", "{{.Id}}", nodeName)
-	var containerIDOut bytes.Buffer
-	containerIDCmd.Stdout = &containerIDOut
-	err = containerIDCmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to get container ID: %v", err)
-	}
-	containerID := strings.TrimSpace(containerIDOut.String())
-
 	// Get the actual node name from Kubernetes
 	getNodeCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
 	var nodeOut bytes.Buffer
@@ -122,9 +112,10 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 	found := false
 	kubernetesNodeName := ""
 	for _, node := range nodes {
-		if strings.Contains(node, containerID) {
+		nodeNameWithoutPrefix := strings.TrimPrefix(node, "node/")
+		if nodeNameWithoutPrefix == nodeName {
 			found = true
-			kubernetesNodeName = strings.TrimPrefix(node, "node/")
+			kubernetesNodeName = nodeNameWithoutPrefix
 			break
 		}
 	}
