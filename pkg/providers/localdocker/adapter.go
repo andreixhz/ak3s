@@ -98,6 +98,16 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 		return fmt.Errorf("failed to get kubeconfig: %v", err)
 	}
 
+	// Get the container ID from the node name
+	containerIDCmd := exec.Command("docker", "inspect", "-f", "{{.Id}}", nodeName)
+	var containerIDOut bytes.Buffer
+	containerIDCmd.Stdout = &containerIDOut
+	err = containerIDCmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to get container ID: %v", err)
+	}
+	containerID := strings.TrimSpace(containerIDOut.String())
+
 	// Get the actual node name from Kubernetes
 	getNodeCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
 	var nodeOut bytes.Buffer
@@ -109,9 +119,11 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 
 	nodes := strings.Split(strings.TrimSpace(nodeOut.String()), "\n")
 	found := false
+	kubernetesNodeName := ""
 	for _, node := range nodes {
-		if strings.Contains(node, nodeName) {
+		if strings.Contains(node, containerID) {
 			found = true
+			kubernetesNodeName = strings.TrimPrefix(node, "node/")
 			break
 		}
 	}
@@ -120,14 +132,14 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 		fmt.Printf("Node %s not found in Kubernetes cluster\n", nodeName)
 	} else {
 		// Drain the node first
-		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", nodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
+		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", kubernetesNodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
 		err = drainCmd.Run()
 		if err != nil {
 			return fmt.Errorf("failed to drain node: %v", err)
 		}
 
 		// Delete the node from Kubernetes
-		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", nodeName)
+		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", kubernetesNodeName)
 		err = deleteCmd.Run()
 		if err != nil {
 			return fmt.Errorf("failed to delete node from Kubernetes: %v", err)
