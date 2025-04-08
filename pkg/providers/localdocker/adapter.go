@@ -35,6 +35,7 @@ func (a *LocalDockerAdapter) CreateMasterNode(name string) error {
 		"--tmpfs", "/var/run",
 		"-e", "K3S_KUBECONFIG_MODE=644",
 		"-e", "K3S_CLUSTER_INIT=true",
+		"-e", "K3S_NODE_NAME="+name,
 		"-p", "6443:6443",
 		"-p", "80:80",
 		"-p", "443:443",
@@ -247,12 +248,10 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 
 	nodes := strings.Split(strings.TrimSpace(nodeOut.String()), "\n")
 	found := false
-	kubernetesNodeName := ""
 	for _, node := range nodes {
 		nodeNameWithoutPrefix := strings.TrimPrefix(node, "node/")
 		if nodeNameWithoutPrefix == nodeName {
 			found = true
-			kubernetesNodeName = nodeNameWithoutPrefix
 			break
 		}
 	}
@@ -261,14 +260,14 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 		p.Update(fmt.Sprintf("Node %s not found in Kubernetes cluster", nodeName))
 	} else {
 		p.Update("Draining node from Kubernetes...")
-		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", kubernetesNodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
+		drainCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "drain", nodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force")
 		err = drainCmd.Run()
 		if err != nil {
 			p.Error(fmt.Errorf("failed to drain node: %v", err))
 		}
 
 		p.Update("Removing node from Kubernetes...")
-		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", kubernetesNodeName)
+		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", nodeName)
 		err = deleteCmd.Run()
 		if err != nil {
 			p.Error(fmt.Errorf("failed to delete node from Kubernetes: %v", err))
