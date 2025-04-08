@@ -19,4 +19,7 @@ type Provider interface {
 	
 	// GetClusterStatus returns the status of the specified cluster
 	GetClusterStatus(name string) (string, error)
+
+	// GetKubeconfig returns the kubeconfig file path for the specified cluster
+	GetKubeconfig(clusterName string) (string, error)
 } 
