@@ -287,12 +287,54 @@ func (a *LocalDockerAdapter) RemoveNode(clusterName, nodeName string) error {
 }
 
 func (a *LocalDockerAdapter) DeleteCluster(name string) error {
-	p := progress.NewProgress(6)
+	p := progress.NewProgress(7)
 	p.Update("Getting kubeconfig...")
 
 	kubeconfigPath, err := a.GetKubeconfig(name)
 	if err != nil {
 		p.Error(fmt.Errorf("failed to get kubeconfig: %v", err))
+	}
+
+	p.Update("Removing all resources from the cluster...")
+	// Get all namespaces except system ones
+	namespacesCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "namespaces", "-o", "name")
+	var namespacesOut bytes.Buffer
+	namespacesCmd.Stdout = &namespacesOut
+	err = namespacesCmd.Run()
+	if err != nil {
+		p.Error(fmt.Errorf("failed to get namespaces: %v", err))
+	}
+
+	namespaces := strings.Split(strings.TrimSpace(namespacesOut.String()), "\n")
+	for _, ns := range namespaces {
+		if ns == "" || strings.Contains(ns, "kube-system") || strings.Contains(ns, "kube-public") || strings.Contains(ns, "kube-node-lease") {
+			continue
+		}
+		namespace := strings.TrimPrefix(ns, "namespace/")
+		
+		// Delete all resources in the namespace
+		deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", "all", "--all", "-n", namespace, "--force", "--grace-period=0")
+		var deleteOut bytes.Buffer
+		deleteCmd.Stdout = &deleteOut
+		deleteCmd.Stderr = &deleteOut
+		deleteCmd.Run()
+	}
+
+	// Delete all CRDs
+	p.Update("Removing all CRDs...")
+	crdsCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "get", "crds", "-o", "name")
+	var crdsOut bytes.Buffer
+	crdsCmd.Stdout = &crdsOut
+	err = crdsCmd.Run()
+	if err == nil {
+		crds := strings.Split(strings.TrimSpace(crdsOut.String()), "\n")
+		for _, crd := range crds {
+			if crd == "" {
+				continue
+			}
+			deleteCmd := exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "delete", crd, "--all", "--force", "--grace-period=0")
+			deleteCmd.Run()
+		}
 	}
 
 	p.Update("Getting all nodes in the cluster...")
