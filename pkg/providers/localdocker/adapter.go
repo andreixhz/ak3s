@@ -56,11 +56,36 @@ func (a *LocalDockerAdapter) ListClusters() ([]string, error) {
 }
 
 func (a *LocalDockerAdapter) AddNode(clusterName, nodeName string) error {
+	// Get the token from the master node
+	tokenCmd := exec.Command("docker", "exec", clusterName, "cat", "/var/lib/rancher/k3s/server/node-token")
+	var tokenOut bytes.Buffer
+	tokenCmd.Stdout = &tokenOut
+	err := tokenCmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to get token from master: %v", err)
+	}
+	token := strings.TrimSpace(tokenOut.String())
+
+	// Get the master node IP
+	ipCmd := exec.Command("docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", clusterName)
+	var ipOut bytes.Buffer
+	ipCmd.Stdout = &ipOut
+	err = ipCmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to get master IP: %v", err)
+	}
+	masterIP := strings.TrimSpace(ipOut.String())
+
+	// Create the worker node
 	cmd := exec.Command("docker", "run", "-d",
 		"--name", nodeName,
 		"--privileged",
-		"--link", clusterName,
-		"ak3s-worker")
+		"--tmpfs", "/run",
+		"--tmpfs", "/var/run",
+		"-e", "K3S_URL=https://"+masterIP+":6443",
+		"-e", "K3S_TOKEN="+token,
+		"rancher/k3s:v1.32.3-k3s1",
+		"agent")
 	return cmd.Run()
 }
 
